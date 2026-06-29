@@ -1,0 +1,359 @@
+-- | Daml Script tests for Veilio governance contracts.
+module Veilio.GovernanceTests where
+
+import DA.Date
+import DA.Optional (fromSome)
+import DA.Time
+import Daml.Script
+
+import Veilio.AuditRecord
+import Veilio.Consent
+import Veilio.Dataset
+import Veilio.Permission
+import Veilio.Revocation
+import Veilio.SharingAgreement
+import Veilio.TestHelpers
+import Veilio.Types
+
+-- | Register dataset and verify audit trail.
+testDatasetRegistration : Script ()
+testDatasetRegistration = do
+  (bankA, bankB) <- setupPartiesForTest "dataset"
+  (datasetCid, _auditCid) <-
+    registerDatasetForTest bankA "ds-1" "Test dataset" "Regulated-Financial"
+
+  datasetOpt <- queryContractId @Dataset bankA datasetCid
+  let dataset = fromSome datasetOpt
+  assertMsg "Dataset ID mismatch" (dataset.datasetId == "ds-1")
+  assertMsg "Dataset status must be registered" (dataset.status == DSRegistered)
+  assertAuditExists bankA bankB DatasetRegistered
+
+-- | Propose and accept sharing agreement; verify tracked fields.
+testSharingAgreementAccepted : Script ()
+testSharingAgreementAccepted = do
+  (bankA, bankB) <- setupPartiesForTest "accept"
+  now <- getTime
+  let expiration = addRelTime now (days 30)
+
+  (datasetCid, _) <- registerDatasetForTest bankA "ds-2" "Sharing test" "Regulated-Financial"
+  proposalCid <-
+    proposeSharingForTest
+      datasetCid
+      bankA
+      bankB
+      "SA-2"
+      "Credit risk modeling"
+      expiration
+
+  (agreementCid, _) <- acceptProposalForTest bankA bankB proposalCid
+  activeAgreementOpt <- queryContractId @SharingAgreement bankA agreementCid
+  let activeAgreement = fromSome activeAgreementOpt
+
+  assertMsg "Agreement dataset ID" (activeAgreement.datasetId == "ds-2")
+  assertMsg "Agreement owner" (activeAgreement.owner == bankA)
+  assertMsg "Agreement recipient" (activeAgreement.recipient == bankB)
+  assertMsg "Agreement purpose" (activeAgreement.purpose == "Credit risk modeling")
+  assertMsg "Agreement expiration" (activeAgreement.expiration == expiration)
+  assertMsg "Agreement must be active" (activeAgreement.status == ASActive)
+  assertAuditExists bankA bankB SharingAgreementProposed
+  assertAuditExists bankA bankB SharingAgreementAccepted
+
+-- | Reject sharing proposal and verify audit event.
+testSharingAgreementRejected : Script ()
+testSharingAgreementRejected = do
+  (bankA, bankB) <- setupPartiesForTest "reject"
+  now <- getTime
+  let expiration = addRelTime now (days 30)
+
+  (datasetCid, _) <- registerDatasetForTest bankA "ds-3" "Reject test" "Regulated-Financial"
+  proposalCid <-
+    proposeSharingForTest datasetCid bankA bankB "SA-3" "Analytics" expiration
+
+  disclosure <- queryDisclosure bankA proposalCid
+  _ <-
+    dualSubmit bankA bankB do
+      exerciseCmd proposalCid RejectSharingAgreement with reason = "Purpose not acceptable"
+
+  proposals <- query @SharingAgreementProposal bankA
+  assertMsg "Proposal should be archived after rejection" (null proposals)
+  assertAuditExists bankA bankB ConsentDenied
+
+-- | Issue permission and verify access rights, scope, and status.
+testPermissionIssued : Script ()
+testPermissionIssued = do
+  (bankA, bankB) <- setupPartiesForTest "permission"
+  now <- getTime
+  let expiration = addRelTime now (days 30)
+
+  (datasetCid, _) <- registerDatasetForTest bankA "ds-4" "Permission test" "Regulated-Financial"
+  proposalCid <- proposeSharingForTest datasetCid bankA bankB "SA-4" "Analytics" expiration
+  (agreementCid, _) <- acceptProposalForTest bankA bankB proposalCid
+
+  (permissionCid, _) <-
+    issuePermissionForTest bankA bankB agreementCid "PERM-4" "read-analytics" Analytics
+
+  permissionOpt <- queryContractId @Permission bankA permissionCid
+  let permission = fromSome permissionOpt
+  assertMsg "Permission access rights" (permission.accessRights == "read-analytics")
+  assertMsg "Permission access scope" (permission.accessScope == Analytics)
+  assertMsg "Permission must be pending" (permission.status == PSPending)
+  assertAuditExists bankA bankB PermissionIssued
+
+-- | Record consent and verify authorized purpose and granted status.
+testConsentGranted : Script ()
+testConsentGranted = do
+  (bankA, bankB) <- setupPartiesForTest "consent-grant"
+  now <- getTime
+  let expiration = addRelTime now (days 30)
+
+  (datasetCid, _) <- registerDatasetForTest bankA "ds-5" "Consent test" "Regulated-Financial"
+  proposalCid <- proposeSharingForTest datasetCid bankA bankB "SA-5" "Fraud detection" expiration
+  (agreementCid, _) <- acceptProposalForTest bankA bankB proposalCid
+  (permissionCid, _) <-
+    issuePermissionForTest bankA bankB agreementCid "PERM-5" "read-only" ReadOnly
+
+  (consentCid, activePermCid, _) <-
+    dualSubmit bankA bankB do
+      exerciseCmd permissionCid RecordConsent with consentId = "CONSENT-5"
+
+  consentOpt <- queryContractId @Consent bankB consentCid
+  activePermOpt <- queryContractId @Permission bankA activePermCid
+  let consent = fromSome consentOpt
+  let activePerm = fromSome activePermOpt
+
+  assertMsg "Consent authorized purpose" (consent.authorizedPurpose == "Fraud detection")
+  assertMsg "Consent must be granted" (consent.status == CSGranted)
+  assertMsg "Permission must be active after consent" (activePerm.status == PSActive)
+  assertAuditExists bankA bankB ConsentRecorded
+
+-- | Deny consent and verify denied status and revoked permission.
+testConsentDenied : Script ()
+testConsentDenied = do
+  (bankA, bankB) <- setupPartiesForTest "consent-deny"
+  now <- getTime
+  let expiration = addRelTime now (days 30)
+
+  (datasetCid, _) <- registerDatasetForTest bankA "ds-6" "Deny test" "Regulated-Financial"
+  proposalCid <- proposeSharingForTest datasetCid bankA bankB "SA-6" "Marketing" expiration
+  (agreementCid, _) <- acceptProposalForTest bankA bankB proposalCid
+  (permissionCid, _) <-
+    issuePermissionForTest bankA bankB agreementCid "PERM-6" "read-only" ReadOnly
+
+  (consentCid, revokedPermCid, _) <-
+    dualSubmit bankA bankB do
+      exerciseCmd
+        permissionCid
+        DenyConsent with
+          consentId = "CONSENT-6-DENY"
+          reason = "Purpose not authorized"
+
+  consentOpt <- queryContractId @Consent bankB consentCid
+  revokedPermOpt <- queryContractId @Permission bankA revokedPermCid
+  let consent = fromSome consentOpt
+  let revokedPerm = fromSome revokedPermOpt
+
+  assertMsg "Consent must be denied" (consent.status == CSDenied)
+  assertMsg "Permission must be revoked after denial" (revokedPerm.status == PSRevoked)
+  assertAuditExists bankA bankB ConsentDenied
+
+-- | Revoke permission and verify revocation record and reason.
+testPermissionRevoked : Script ()
+testPermissionRevoked = do
+  (bankA, bankB) <- setupPartiesForTest "perm-revoke"
+  now <- getTime
+  let expiration = addRelTime now (days 30)
+
+  (datasetCid, _) <- registerDatasetForTest bankA "ds-7" "Revoke test" "Regulated-Financial"
+  proposalCid <- proposeSharingForTest datasetCid bankA bankB "SA-7" "Risk modeling" expiration
+  (agreementCid, _) <- acceptProposalForTest bankA bankB proposalCid
+  (permissionCid, _) <-
+    issuePermissionForTest bankA bankB agreementCid "PERM-7" "read-analytics" Analytics
+  (_, activePermCid, _) <-
+    dualSubmit bankA bankB do
+      exerciseCmd permissionCid RecordConsent with consentId = "CONSENT-7"
+
+  RevocationResult{revocationCid, auditCid = _auditCid} <-
+    dualSubmit bankA bankB do
+      exerciseCmd
+        activePermCid
+        RevokePermission with
+          revocationId = "REV-7"
+          reason = "Purpose fulfilled"
+
+  revocationOpt <- queryContractId @Revocation bankA revocationCid
+  let revocation = fromSome revocationOpt
+  assertMsg "Revocation reason" (revocation.reason == "Purpose fulfilled")
+  assertMsg "Revocation permission ID" (revocation.permissionId == "PERM-7")
+  assertAuditExists bankA bankB PermissionRevoked
+
+-- | Revoke sharing agreement and verify status transition.
+testAgreementRevoked : Script ()
+testAgreementRevoked = do
+  (bankA, bankB) <- setupPartiesForTest "agreement-revoke"
+  now <- getTime
+  let expiration = addRelTime now (days 30)
+
+  (datasetCid, _) <- registerDatasetForTest bankA "ds-8" "Agreement revoke" "Regulated-Financial"
+  proposalCid <- proposeSharingForTest datasetCid bankA bankB "SA-8" "Analytics" expiration
+  (agreementCid, _) <- acceptProposalForTest bankA bankB proposalCid
+
+  (revokedCid, _) <-
+    dualSubmit bankA bankB do
+      exerciseCmd agreementCid RevokeAgreement with reason = "No longer needed"
+
+  revokedOpt <- queryContractId @SharingAgreement bankA revokedCid
+  let revoked = fromSome revokedOpt
+  assertMsg "Agreement must be revoked" (revoked.status == ASRevoked)
+  assertAuditExists bankA bankB AgreementRevoked
+
+-- | Expire sharing agreement and verify status transition.
+testAgreementExpired : Script ()
+testAgreementExpired = do
+  (bankA, bankB) <- setupPartiesForTest "agreement-expire"
+  now <- getTime
+  let expiration = addRelTime now (days 30)
+
+  (datasetCid, _) <- registerDatasetForTest bankA "ds-9" "Agreement expire" "Regulated-Financial"
+  proposalCid <- proposeSharingForTest datasetCid bankA bankB "SA-9" "Analytics" expiration
+  (agreementCid, _) <- acceptProposalForTest bankA bankB proposalCid
+
+  (expiredCid, _) <-
+    dualSubmit bankA bankB do
+      exerciseCmd agreementCid ExpireAgreement
+
+  expiredAgreementOpt <- queryContractId @SharingAgreement bankA expiredCid
+  let expired = fromSome expiredAgreementOpt
+  assertMsg "Agreement must be expired" (expired.status == ASExpired)
+  assertAuditExists bankA bankB AgreementExpired
+
+-- | Withdraw consent and verify withdrawn status.
+testConsentWithdrawn : Script ()
+testConsentWithdrawn = do
+  (bankA, bankB) <- setupPartiesForTest "consent-withdraw"
+  now <- getTime
+  let expiration = addRelTime now (days 30)
+
+  (datasetCid, _) <- registerDatasetForTest bankA "ds-10" "Withdraw test" "Regulated-Financial"
+  proposalCid <- proposeSharingForTest datasetCid bankA bankB "SA-10" "Analytics" expiration
+  (agreementCid, _) <- acceptProposalForTest bankA bankB proposalCid
+  (permissionCid, _) <-
+    issuePermissionForTest bankA bankB agreementCid "PERM-10" "read-only" ReadOnly
+  (consentCid, _, _) <-
+    dualSubmit bankA bankB do
+      exerciseCmd permissionCid RecordConsent with consentId = "CONSENT-10"
+
+  (withdrawnCid, _) <-
+    dualSubmit bankA bankB do
+      exerciseCmd consentCid WithdrawConsent with reason = "Purpose changed"
+
+  withdrawnOpt <- queryContractId @Consent bankB withdrawnCid
+  let withdrawn = fromSome withdrawnOpt
+  assertMsg "Consent must be withdrawn" (withdrawn.status == CSWithdrawn)
+  assertAuditExists bankA bankB ConsentWithdrawn
+
+-- | Expire permission when past expiration time.
+testPermissionExpiration : Script ()
+testPermissionExpiration = do
+  (bankA, bankB) <- setupPartiesForTest "perm-expire"
+  setTime (time (date 2026 Jun 11) 10 0 0)
+  now <- getTime
+  let expiration = addRelTime now (days 1)
+
+  (datasetCid, _) <- registerDatasetForTest bankA "ds-11" "Expiration test" "Regulated-Financial"
+  proposalCid <- proposeSharingForTest datasetCid bankA bankB "SA-11" "Analytics" expiration
+  (agreementCid, _) <- acceptProposalForTest bankA bankB proposalCid
+  (permissionCid, _) <-
+    issuePermissionForTest bankA bankB agreementCid "PERM-11" "read-only" ReadOnly
+
+  setTime (addRelTime expiration (hours 1))
+
+  expirationResult <-
+    dualSubmit bankA bankB do
+      exerciseCmd permissionCid CheckExpiration
+  let (expiredCid, _) = fromSome expirationResult
+  expiredPermOpt <- queryContractId @Permission bankA expiredCid
+  let expired = fromSome expiredPermOpt
+  assertMsg "Permission must be expired" (expired.status == PSExpired)
+  assertAuditExists bankA bankB AgreementExpired
+
+-- | Recipient cannot revoke permission (owner-only controller).
+testUnauthorizedRevokeFails : Script ()
+testUnauthorizedRevokeFails = do
+  (bankA, bankB) <- setupPartiesForTest "auth-fail"
+  now <- getTime
+  let expiration = addRelTime now (days 30)
+
+  (datasetCid, _) <- registerDatasetForTest bankA "ds-12" "Auth test" "Regulated-Financial"
+  proposalCid <- proposeSharingForTest datasetCid bankA bankB "SA-12" "Analytics" expiration
+  (agreementCid, _) <- acceptProposalForTest bankA bankB proposalCid
+  (permissionCid, _) <-
+    issuePermissionForTest bankA bankB agreementCid "PERM-12" "read-only" ReadOnly
+  (_, activePermCid, _) <-
+    dualSubmit bankA bankB do
+      exerciseCmd permissionCid RecordConsent with consentId = "CONSENT-12"
+
+  submitMustFail (actAs bankB) do
+    exerciseCmd
+      activePermCid
+      RevokePermission with
+        revocationId = "REV-12"
+        reason = "Unauthorized attempt"
+
+-- | Full end-to-end governance lifecycle.
+testFullGovernanceLifecycle : Script ()
+testFullGovernanceLifecycle = do
+  (bankA, bankB) <- setupPartiesForTest "e2e"
+  now <- getTime
+  let expiration = addRelTime now (days 30)
+
+  (datasetCid, _) <-
+    registerDatasetForTest bankA "123" "Mock credit risk dataset" "Regulated-Financial"
+  proposalCid <-
+    proposeSharingForTest
+      datasetCid
+      bankA
+      bankB
+      "SA-123-B"
+      "Credit risk modeling for loan approval"
+      expiration
+  (agreementCid, _) <- acceptProposalForTest bankA bankB proposalCid
+  (permissionCid, _) <-
+    issuePermissionForTest bankA bankB agreementCid "PERM-123-B" "read-analytics" Analytics
+  (_, activePermCid, _) <-
+    dualSubmit bankA bankB do
+      exerciseCmd permissionCid RecordConsent with consentId = "CONSENT-123-B"
+
+  auditCount <- countAudits bankA bankB
+  assertMsg "Expected at least 4 audit records mid-flow" (auditCount >= 4)
+
+  RevocationResult{revocationCid = _revocationCid, auditCid = _} <-
+    dualSubmit bankA bankB do
+      exerciseCmd
+        activePermCid
+        RevokePermission with
+          revocationId = "REV-123-B"
+          reason = "Purpose fulfilled - modeling complete"
+
+  revocations <- query @Revocation bankA
+  assertMsg "Expected one revocation record" (length revocations == 1)
+
+  finalAuditCount <- countAudits bankA bankB
+  assertMsg "Expected at least 6 audit records after revocation" (finalAuditCount >= 6)
+
+-- | Run all governance contract tests in sequence.
+testAll : Script ()
+testAll = do
+  testDatasetRegistration
+  testSharingAgreementAccepted
+  testSharingAgreementRejected
+  testPermissionIssued
+  testConsentGranted
+  testConsentDenied
+  testPermissionRevoked
+  testAgreementRevoked
+  testAgreementExpired
+  testConsentWithdrawn
+  testPermissionExpiration
+  testUnauthorizedRevokeFails
+  testFullGovernanceLifecycle
+  debug "All Veilio governance tests passed."

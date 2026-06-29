@@ -1,0 +1,122 @@
+-- | Cross-participant lifecycle validation script across two participants.
+module Veilio.LifecycleMultinode where
+
+import DA.Optional (isSome)
+import DA.Time
+import Daml.Script
+
+import Veilio.AuditRecord
+import Veilio.Consent
+import Veilio.Dataset
+import Veilio.MultinodeHelpers
+import Veilio.Permission
+import Veilio.Revocation
+import Veilio.SharingAgreement
+import Veilio.Types
+
+lifecycleMultinode : Script ()
+lifecycleMultinode = do
+  (ownerBank, recipientBank) <- setupMultinodeParties
+  let retries = defaultRetries
+
+  now <- getTime
+
+  registerAuditCid <- submit ownerBank do
+    createCmd
+      AuditRecord with
+        auditId = "audit-register-123"
+        actor = ownerBank
+        action = DatasetRegistered
+        datasetId = "123"
+        timestamp = now
+        details = Some "Registered dataset: Credit risk dataset"
+        relatedEntityId = None
+        observers = []
+
+  datasetCid <- submit ownerBank do
+    createCmd
+      Dataset with
+        datasetId = "123"
+        owner = ownerBank
+        description = "Credit risk dataset"
+        dataFormat = "CSV"
+        classification = "Regulated-Financial"
+        status = DSRegistered
+        registeredAt = now
+
+  assertDatasetPrivateFromRecipient recipientBank
+
+  let expiresAt = addRelTime now (days 30)
+
+  proposalCid <- submit ownerBank do
+    exerciseCmd
+      datasetCid
+      ProposeSharingAgreement with
+        agreementId = "SA-123-B"
+        recipient = recipientBank
+        purpose = "Credit risk modeling for loan approval"
+        expiration = expiresAt
+
+  pollForCid recipientBank proposalCid retries
+  (agreementCid, acceptAuditCid) <-
+    submit recipientBank do exerciseCmd proposalCid AcceptSharingAgreement
+
+  assertDatasetPrivateFromRecipient recipientBank
+
+  pollForCid recipientBank agreementCid retries
+  agreements <- query @SharingAgreement recipientBank
+  assertMsg "Recipient should see sharing agreement" (length agreements >= 1)
+
+  pollForCid ownerBank agreementCid retries
+  (permissionCid, permissionAuditCid) <-
+    submit ownerBank do
+      exerciseCmd
+        agreementCid
+        IssuePermission with
+          permissionId = "PERM-123-B"
+          accessRights = "read-analytics"
+          accessScope = Analytics
+
+  (_consentCid, activePermCid, consentAuditCid) <-
+    submitAfterPolling recipientBank permissionCid retries do
+      exerciseCmd permissionCid RecordConsent with consentId = "CONSENT-123-B"
+
+  auditRecordsA <- query @AuditRecord ownerBank
+  auditRecordsB <- query @AuditRecord recipientBank
+  let auditCount = length auditRecordsA + length auditRecordsB
+  assertMsg "Expected at least 4 audit records" (auditCount >= 4)
+
+  permissions <- query @Permission ownerBank
+  assertMsg "Expected active permission on owner participant" $
+    any (\(_, p) -> p.status == PSActive) permissions
+
+  consents <- query @Consent recipientBank
+  assertMsg "Expected granted consent on recipient participant" $
+    any (\(_, c) -> c.status == CSGranted) consents
+
+  pollForCid ownerBank activePermCid retries
+  RevocationResult{revocationCid, auditCid = auditRevokeCid} <-
+    submit ownerBank do
+      exerciseCmd
+        activePermCid
+        RevokePermission with
+          revocationId = "REV-123-B"
+          reason = "Purpose fulfilled - modeling complete"
+
+  pollForCid ownerBank revocationCid retries
+  revocationOpt <- queryContractId @Revocation ownerBank revocationCid
+  assertMsg "Expected revocation record" (isSome revocationOpt)
+
+  finalAuditsA <- query @AuditRecord ownerBank
+  finalAuditsB <- query @AuditRecord recipientBank
+  let finalAuditCount = length finalAuditsA + length finalAuditsB
+  assertMsg "Expected at least 6 audit records after revocation" (finalAuditCount >= 6)
+
+  debug "Veilio multinode Canton lifecycle script completed successfully."
+  debug ("Primary participant ledger port: 5011")
+  debug ("Secondary participant ledger port: 5021")
+  debug ("Registration audit: " <> show registerAuditCid)
+  debug ("Acceptance audit: " <> show acceptAuditCid)
+  debug ("Permission audit: " <> show permissionAuditCid)
+  debug ("Consent audit: " <> show consentAuditCid)
+  debug ("Revocation audit: " <> show auditRevokeCid)

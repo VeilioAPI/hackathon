@@ -1,0 +1,123 @@
+-- | Shared helpers for Veilio governance Daml Script tests.
+module Veilio.TestHelpers where
+
+import DA.Optional (fromSome)
+import DA.Time
+import Daml.Script
+
+import Veilio.AuditRecord
+import Veilio.Dataset
+import Veilio.Permission
+import Veilio.SharingAgreement
+import Veilio.Types
+
+-- | Allocate owner and recipient parties with unique hints per test.
+setupPartiesForTest : Text -> Script (Party, Party)
+setupPartiesForTest suffix = do
+  bankA <- allocatePartyByHint (PartyIdHint ("BankA-" <> suffix))
+  bankB <- allocatePartyByHint (PartyIdHint ("BankB-" <> suffix))
+  pure (bankA, bankB)
+
+-- | Allocate BankA (owner) and BankB (recipient) for standalone scripts.
+setupParties : Script (Party, Party)
+setupParties = setupPartiesForTest "default"
+
+-- | Submit as both owner and recipient (required for Daml 3.4 multi-party contracts).
+dualSubmit : Party -> Party -> Commands a -> Script a
+dualSubmit owner recipient =
+  submit (actAs [owner, recipient] <> readAs [owner, recipient])
+
+-- | Register a dataset and return the dataset + registration audit contract IDs.
+registerDatasetForTest :
+  Party -> Text -> Text -> Text -> Script (ContractId Dataset, ContractId AuditRecord)
+registerDatasetForTest owner datasetId description classification = do
+  now <- getTime
+  auditCid <-
+    submit owner do
+      createCmd
+        AuditRecord with
+          auditId = "audit-register-" <> datasetId
+          actor = owner
+          action = DatasetRegistered
+          datasetId = datasetId
+          timestamp = now
+          details = Some ("Registered dataset: " <> description)
+          relatedEntityId = None
+          observers = []
+  datasetCid <-
+    submit owner do
+      createCmd
+        Dataset with
+          datasetId = datasetId
+          owner = owner
+          description = description
+          dataFormat = "CSV"
+          classification = classification
+          status = DSRegistered
+          registeredAt = now
+  pure (datasetCid, auditCid)
+
+-- | Propose a sharing agreement from an existing dataset.
+proposeSharingForTest :
+  ContractId Dataset ->
+  Party ->
+  Party ->
+  Text ->
+  Text ->
+  Time ->
+  Script (ContractId SharingAgreementProposal)
+proposeSharingForTest datasetCid owner recipient agreementId purpose expiration =
+  submit owner do
+    exerciseCmd
+      datasetCid
+      ProposeSharingAgreement with
+        agreementId
+        recipient
+        purpose
+        expiration
+
+-- | Accept a sharing proposal with explicit disclosure (Daml 3.4).
+acceptProposalForTest :
+  Party ->
+  Party ->
+  ContractId SharingAgreementProposal ->
+  Script (ContractId SharingAgreement, ContractId AuditRecord)
+acceptProposalForTest owner recipient proposalCid = do
+  disclosure <- queryDisclosure owner proposalCid
+  submit
+    (actAs [owner, recipient] <> readAs [owner, recipient] <> disclose (fromSome disclosure))
+    do exerciseCmd proposalCid AcceptSharingAgreement
+
+-- | Issue a pending permission from an active sharing agreement.
+issuePermissionForTest :
+  Party ->
+  Party ->
+  ContractId SharingAgreement ->
+  Text ->
+  Text ->
+  AccessScope ->
+  Script (ContractId Permission, ContractId AuditRecord)
+issuePermissionForTest owner recipient agreementCid permissionId accessRights accessScope =
+  dualSubmit owner recipient do
+    exerciseCmd
+      agreementCid
+      IssuePermission with
+        permissionId
+        accessRights
+        accessScope
+
+-- | Count audit records visible to either party.
+countAudits : Party -> Party -> Script Int
+countAudits partyA partyB = do
+  auditsA <- query @AuditRecord partyA
+  auditsB <- query @AuditRecord partyB
+  pure (length auditsA + length auditsB)
+
+-- | Assert at least one audit record matches the given action.
+assertAuditExists : Party -> Party -> GovernanceAction -> Script ()
+assertAuditExists partyA partyB action = do
+  auditsA <- query @AuditRecord partyA
+  auditsB <- query @AuditRecord partyB
+  let allAudits = map snd auditsA ++ map snd auditsB
+  assertMsg ("Expected audit action: " <> show action) $
+    any (\a -> a.action == action) allAudits

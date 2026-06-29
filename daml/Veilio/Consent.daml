@@ -1,0 +1,38 @@
+-- | Recipient consent record authorizing a specific purpose of use.
+module Veilio.Consent where
+
+import Veilio.AuditRecord
+import Veilio.Types
+
+-- | Consent granted by the recipient for purpose-based data access.
+template Consent
+  with
+    consentId : Text
+    permissionId : Text
+    agreementId : Text
+    datasetId : Text
+    recipient : Party
+    owner : Party
+    authorizedPurpose : Text
+    status : ConsentStatus
+    recordedAt : Time
+  where
+    signatory recipient, owner
+
+    postconsuming choice WithdrawConsent : (ContractId Consent, ContractId AuditRecord)
+      with
+        reason : Text
+      controller recipient
+      do
+        assertMsg "Consent must be granted" (status == CSGranted)
+        withdrawnCid <- create this with status = CSWithdrawn
+        auditCid <-
+          createAuditRecord
+            ("audit-withdraw-" <> consentId)
+            recipient
+            ConsentWithdrawn
+            datasetId
+            (Some reason)
+            (Some consentId)
+            [owner]
+        pure (withdrawnCid, auditCid)

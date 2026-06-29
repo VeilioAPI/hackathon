@@ -1,0 +1,30 @@
+-- | Revocation record capturing permission withdrawal events.
+module Veilio.Revocation where
+
+import DA.Time
+
+import Veilio.AuditRecord
+import Veilio.Types
+
+-- | Immutable record of a permission revocation event.
+template Revocation
+  with
+    revocationId : Text
+    permissionId : Text
+    agreementId : Text
+    datasetId : Text
+    revoker : Party
+    affectedParty : Party
+    reason : Text
+    revokedAt : Time
+  where
+    signatory revoker
+    observer affectedParty
+
+-- | Result returned when a permission is revoked.
+data RevocationResult
+  = RevocationResult
+      with
+        revocationCid : ContractId Revocation
+        auditCid : ContractId AuditRecord
+  deriving (Eq, Show)

@@ -1,0 +1,145 @@
+-- | Cross-organization sharing agreement between data owner and recipient.
+module Veilio.SharingAgreement where
+
+import Veilio.AuditRecord
+import Veilio.Permission
+import Veilio.Types
+
+-- | Proposal sent by the data owner; recipient must accept to activate sharing.
+template SharingAgreementProposal
+  with
+    agreementId : Text
+    datasetId : Text
+    owner : Party
+    recipient : Party
+    purpose : Text
+    expiration : Time
+    proposedAt : Time
+    auditCid : ContractId AuditRecord
+  where
+    signatory owner
+    observer recipient
+
+    choice AcceptSharingAgreement : (ContractId SharingAgreement, ContractId AuditRecord)
+      controller recipient
+      do
+        now <- getTime
+        assertMsg "Agreement has expired" (now < expiration)
+        auditCid <-
+          createAuditRecord
+            ("audit-accept-" <> agreementId)
+            recipient
+            SharingAgreementAccepted
+            datasetId
+            (Some ("Accepted sharing for purpose: " <> purpose))
+            (Some agreementId)
+            [owner]
+        agreementCid <-
+          create
+            SharingAgreement with
+              agreementId
+              datasetId
+              owner
+              recipient
+              purpose
+              expiration
+              status = ASActive
+              createdAt = now
+        pure (agreementCid, auditCid)
+
+    choice RejectSharingAgreement : ContractId AuditRecord
+      with
+        reason : Text
+      controller recipient
+      do
+        createAuditRecord
+          ("audit-reject-" <> agreementId)
+          recipient
+          ConsentDenied
+          datasetId
+          (Some reason)
+          (Some agreementId)
+          [owner]
+
+-- | Active sharing agreement governing purpose-based data access.
+template SharingAgreement
+  with
+    agreementId : Text
+    datasetId : Text
+    owner : Party
+    recipient : Party
+    purpose : Text
+    expiration : Time
+    status : AgreementStatus
+    createdAt : Time
+  where
+    signatory owner, recipient
+
+    choice IssuePermission : (ContractId Permission, ContractId AuditRecord)
+      with
+        permissionId : Text
+        accessRights : Text
+        accessScope : AccessScope
+      controller owner
+      do
+        assertMsg "Agreement must be active" (status == ASActive)
+        now <- getTime
+        assertMsg "Agreement has expired" (now < expiration)
+        auditCid <-
+          createAuditRecord
+            ("audit-permission-" <> permissionId)
+            owner
+            PermissionIssued
+            datasetId
+            (Some ("Issued permission with scope: " <> show accessScope))
+            (Some permissionId)
+            [recipient]
+        permissionCid <-
+          create
+            Permission with
+              permissionId
+              agreementId
+              datasetId
+              owner
+              recipient
+              purpose
+              accessRights
+              accessScope
+              status = PSPending
+              issuedAt = now
+              expiresAt = expiration
+        pure (permissionCid, auditCid)
+
+    postconsuming choice ExpireAgreement : (ContractId SharingAgreement, ContractId AuditRecord)
+      controller owner
+      do
+        assertMsg "Agreement is not active" (status == ASActive)
+        auditCid <-
+          createAuditRecord
+            ("audit-expire-" <> agreementId)
+            owner
+            AgreementExpired
+            datasetId
+            (Some "Sharing agreement expired")
+            (Some agreementId)
+            [recipient]
+        expiredCid <- create this with status = ASExpired
+        pure (expiredCid, auditCid)
+
+    postconsuming choice RevokeAgreement : (ContractId SharingAgreement, ContractId AuditRecord)
+      with
+        reason : Text
+      controller owner
+      do
+        assertMsg "Agreement is not active" (status == ASActive)
+        auditCid <-
+          createAuditRecord
+            ("audit-revoke-agreement-" <> agreementId)
+            owner
+            AgreementRevoked
+            datasetId
+            (Some reason)
+            (Some agreementId)
+            [recipient]
+        revokedCid <- create this with status = ASRevoked
+        pure (revokedCid, auditCid)

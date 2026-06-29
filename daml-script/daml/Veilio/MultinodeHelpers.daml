@@ -1,0 +1,81 @@
+-- | Helpers for cross-participant Canton Daml Script execution.
+module Veilio.MultinodeHelpers where
+
+import DA.Text (isInfixOf)
+import DA.Time (RelTime, milliseconds)
+import Daml.Script
+
+import Veilio.Dataset
+
+-- | Participant Node A — hosts owner bank party.
+participantA : ParticipantName
+participantA = ParticipantName "participant1"
+
+-- | Participant Node B — hosts recipient bank party.
+participantB : ParticipantName
+participantB = ParticipantName "participant2"
+
+data Retries = Retries with
+    remaining : Int
+    delay : RelTime
+
+defaultRetries : Retries
+defaultRetries = Retries with remaining = 30, delay = milliseconds 200
+
+partyMatchesHint : Text -> Party -> Bool
+partyMatchesHint hint party = (hint <> "::") `isInfixOf` (show party)
+
+findPartyOn : Text -> ParticipantName -> Script (Optional Party)
+findPartyOn hint participant = do
+  parties <- listKnownPartiesOn participant
+  case filter (\d -> partyMatchesHint hint d.party) parties of
+    [details] -> pure (Some details.party)
+    _ -> pure None
+
+lookupPartyOn : Text -> ParticipantName -> Script Party
+lookupPartyOn hint participant = do
+  found <- findPartyOn hint participant
+  case found of
+    Some party -> pure party
+    None -> abort ("Party not found on participant: " <> hint)
+
+-- | Find an existing party by hint or allocate it on the given participant.
+findOrAllocatePartyOn : Text -> ParticipantName -> Script Party
+findOrAllocatePartyOn hint participant = do
+  found <- findPartyOn hint participant
+  case found of
+    Some party -> pure party
+    None -> allocatePartyOn hint participant
+
+-- | Resolve (or allocate) owner/recipient bank parties on participant1/2.
+setupMultinodeParties : Script (Party, Party)
+setupMultinodeParties = do
+  ownerBank <- findOrAllocatePartyOn "OwnerBank" participantA
+  recipientBank <- findOrAllocatePartyOn "RecipientBank" participantB
+  pure (ownerBank, recipientBank)
+
+-- | Poll until a contract is visible to the given party.
+pollForCid : (Template t, HasEnsure t) => Party -> ContractId t -> Retries -> Script ()
+pollForCid party cid retries = do
+  result <- queryContractId party cid
+  case result of
+    Some _ -> pure ()
+    None ->
+      if retries.remaining <= 0
+        then abort "Contract not visible on participant after polling"
+        else do
+          sleep retries.delay
+          pollForCid party cid (retries with remaining = retries.remaining - 1)
+
+-- | Submit after waiting for cross-participant contract visibility.
+submitAfterPolling :
+  (Template t, HasEnsure t) => Party -> ContractId t -> Retries -> Commands a -> Script a
+submitAfterPolling party cid retries cmds = do
+  pollForCid party cid retries
+  submit party cmds
+
+-- | Recipient must not see owner-only datasets before sharing is proposed.
+assertDatasetPrivateFromRecipient : Party -> Script ()
+assertDatasetPrivateFromRecipient recipient = do
+  datasets <- query @Dataset recipient
+  assertMsg "Privacy violation: recipient can see dataset before sharing" (null datasets)

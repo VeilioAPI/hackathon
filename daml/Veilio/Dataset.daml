@@ -1,0 +1,95 @@
+-- | Dataset registration for governance (metadata only, no PII).
+module Veilio.Dataset where
+
+import DA.Time
+
+import Veilio.AuditRecord
+import Veilio.SharingAgreement
+import Veilio.Types
+
+-- | A registered dataset owned by a single organization.
+template Dataset
+  with
+    datasetId : Text
+    owner : Party
+    description : Text
+    dataFormat : Text
+    classification : Text
+    status : DatasetStatus
+    registeredAt : Time
+  where
+    signatory owner
+
+    choice ProposeSharingAgreement : ContractId SharingAgreementProposal
+      with
+        agreementId : Text
+        recipient : Party
+        purpose : Text
+        expiration : Time
+      controller owner
+      do
+        now <- getTime
+        assertMsg "Dataset must be registered or active" (status == DSRegistered || status == DSActive)
+        assertMsg "Expiration must be in the future" (expiration > now)
+        auditCid <-
+          createAuditRecord
+            ("audit-propose-" <> agreementId)
+            owner
+            SharingAgreementProposed
+            datasetId
+            (Some ("Proposed sharing with purpose: " <> purpose))
+            (Some agreementId)
+            [recipient]
+        create
+          SharingAgreementProposal with
+            agreementId
+            datasetId
+            owner
+            recipient
+            purpose
+            expiration
+            proposedAt = now
+            auditCid
+
+    choice ArchiveDataset : ContractId AuditRecord
+      controller owner
+      do
+        createAuditRecord
+          ("audit-archive-" <> datasetId)
+          owner
+          DatasetArchived
+          datasetId
+          (Some "Dataset archived")
+          None
+          []
+
+-- | Factory to register a new dataset and emit the first audit event.
+registerDataset :
+  Text ->
+  Party ->
+  Text ->
+  Text ->
+  Text ->
+  Update (ContractId Dataset, ContractId AuditRecord)
+registerDataset datasetId owner description dataFormat classification = do
+  now <- getTime
+  auditCid <-
+    createAuditRecord
+      ("audit-register-" <> datasetId)
+      owner
+      DatasetRegistered
+      datasetId
+      (Some ("Registered dataset: " <> description))
+      None
+      []
+  datasetCid <-
+    create
+      Dataset with
+        datasetId
+        owner
+        description
+        dataFormat
+        classification
+        status = DSRegistered
+        registeredAt = now
+  pure (datasetCid, auditCid)

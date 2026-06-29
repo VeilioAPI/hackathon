@@ -1,0 +1,57 @@
+-- | Shared governance types for Veilio Exchange.
+-- No PII is modeled here; only governance identifiers and metadata.
+module Veilio.Types where
+
+-- | Lifecycle status of a registered dataset.
+data DatasetStatus
+  = DSRegistered
+  | DSActive
+  | DSRevoked
+  | DSArchived
+  deriving (Eq, Show)
+
+-- | Lifecycle status of a sharing agreement.
+data AgreementStatus
+  = ASProposed
+  | ASActive
+  | ASExpired
+  | ASRevoked
+  deriving (Eq, Show)
+
+-- | Lifecycle status of an access permission.
+data PermissionStatus
+  = PSPending
+  | PSActive
+  | PSExpired
+  | PSRevoked
+  deriving (Eq, Show)
+
+-- | Consent state recorded by the recipient.
+data ConsentStatus
+  = CSPending
+  | CSGranted
+  | CSDenied
+  | CSWithdrawn
+  deriving (Eq, Show)
+
+-- | Scope of access granted to a recipient.
+data AccessScope
+  = ReadOnly
+  | Analytics
+  | FullAccess
+  deriving (Eq, Show)
+
+-- | Governance actions recorded in the immutable audit trail.
+data GovernanceAction
+  = DatasetRegistered
+  | DatasetArchived
+  | SharingAgreementProposed
+  | SharingAgreementAccepted
+  | PermissionIssued
+  | ConsentRecorded
+  | ConsentDenied
+  | ConsentWithdrawn
+  | PermissionRevoked
+  | AgreementExpired
+  | AgreementRevoked
+  deriving (Eq, Show)

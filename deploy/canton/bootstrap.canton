@@ -1,0 +1,39 @@
+// Canton bootstrap for Docker: synchronizer, five participants, DAR upload.
+
+val synchronizerAlias = "veilio-sync"
+
+bootstrap.synchronizer(
+  synchronizerName = synchronizerAlias,
+  sequencers = Seq(sequencer1),
+  mediators = Seq(mediator1),
+  synchronizerOwners = Seq(sequencer1),
+  synchronizerThreshold = 1,
+  staticSynchronizerParameters = StaticSynchronizerParameters.defaultsWithoutKMS(ProtocolVersion.latest)
+)
+
+participant1.synchronizers.connect_local(sequencer1, synchronizerAlias)
+participant2.synchronizers.connect_local(sequencer1, synchronizerAlias)
+participant3.synchronizers.connect_local(sequencer1, synchronizerAlias)
+participant4.synchronizers.connect_local(sequencer1, synchronizerAlias)
+participant5.synchronizers.connect_local(sequencer1, synchronizerAlias)
+
+val governanceDar = "/app/dars/veilio-governance-0.2.0.dar"
+participant1.dars.upload(governanceDar)
+participant2.dars.upload(governanceDar)
+participant3.dars.upload(governanceDar)
+participant4.dars.upload(governanceDar)
+participant5.dars.upload(governanceDar)
+
+// Banks are allocated dynamically by the backend via POST /v2/parties.
+
+utils.generate_daml_script_participants_conf(
+  file = Some("/shared/participants.json"),
+  defaultParticipant = Some(participant1)
+)
+
+java.nio.file.Files.write(
+  java.nio.file.Paths.get("/shared/.canton-ready"),
+  "ok\n".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+)
+
+logger.info("Veilio Docker Canton bootstrap complete (5 participants).")

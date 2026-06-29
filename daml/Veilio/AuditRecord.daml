@@ -1,0 +1,45 @@
+-- | Immutable audit trail for all governance actions.
+module Veilio.AuditRecord where
+
+import DA.Time
+
+import Veilio.Types
+
+-- | An append-only governance audit event.
+-- Once created, audit records are never modified or archived by design.
+template AuditRecord
+  with
+    auditId : Text
+    actor : Party
+    action : GovernanceAction
+    datasetId : Text
+    timestamp : Time
+    details : Optional Text
+    relatedEntityId : Optional Text
+    observers : [Party]
+  where
+    signatory actor
+    observer observers
+
+-- | Helper to create a standardized audit record.
+createAuditRecord :
+  Text ->
+  Party ->
+  GovernanceAction ->
+  Text ->
+  Optional Text ->
+  Optional Text ->
+  [Party] ->
+  Update (ContractId AuditRecord)
+createAuditRecord auditId actor action datasetId details relatedEntityId observers =
+  getTime >>= \now ->
+    create
+      AuditRecord with
+        auditId
+        actor
+        action
+        datasetId
+        timestamp = now
+        details
+        relatedEntityId
+        observers

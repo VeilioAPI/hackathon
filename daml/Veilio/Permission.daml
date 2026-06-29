@@ -1,0 +1,190 @@
+-- | Purpose-based access permission linked to a sharing agreement.
+module Veilio.Permission where
+
+import Veilio.AuditRecord
+import Veilio.Consent
+import Veilio.Revocation
+import Veilio.Types
+
+-- | Access permission granting scoped rights to a recipient.
+template Permission
+  with
+    permissionId : Text
+    agreementId : Text
+    datasetId : Text
+    owner : Party
+    recipient : Party
+    purpose : Text
+    accessRights : Text
+    accessScope : AccessScope
+    status : PermissionStatus
+    issuedAt : Time
+    expiresAt : Time
+  where
+    signatory owner, recipient
+
+    choice RecordConsent : (ContractId Consent, ContractId Permission, ContractId AuditRecord)
+      with
+        consentId : Text
+      controller recipient
+      do
+        assertMsg "Permission must be pending" (status == PSPending)
+        now <- getTime
+        assertMsg "Permission has expired" (now < expiresAt)
+        consentCid <-
+          create
+            Consent with
+              consentId
+              permissionId
+              agreementId
+              datasetId
+              recipient
+              owner
+              authorizedPurpose = purpose
+              status = CSGranted
+              recordedAt = now
+        auditCid <-
+          createAuditRecord
+            ("audit-consent-" <> consentId)
+            recipient
+            ConsentRecorded
+            datasetId
+            (Some ("Consent granted for purpose: " <> purpose))
+            (Some consentId)
+            [owner]
+        activePermCid <-
+          create
+            Permission with
+              permissionId
+              agreementId
+              datasetId
+              owner
+              recipient
+              purpose
+              accessRights
+              accessScope
+              status = PSActive
+              issuedAt
+              expiresAt
+        pure (consentCid, activePermCid, auditCid)
+
+    choice DenyConsent : (ContractId Consent, ContractId Permission, ContractId AuditRecord)
+      with
+        consentId : Text
+        reason : Text
+      controller recipient
+      do
+        assertMsg "Permission must be pending" (status == PSPending)
+        now <- getTime
+        consentCid <-
+          create
+            Consent with
+              consentId
+              permissionId
+              agreementId
+              datasetId
+              recipient
+              owner
+              authorizedPurpose = purpose
+              status = CSDenied
+              recordedAt = now
+        auditCid <-
+          createAuditRecord
+            ("audit-deny-" <> consentId)
+            recipient
+            ConsentDenied
+            datasetId
+            (Some reason)
+            (Some consentId)
+            [owner]
+        revokedPermCid <-
+          create
+            Permission with
+              permissionId
+              agreementId
+              datasetId
+              owner
+              recipient
+              purpose
+              accessRights
+              accessScope
+              status = PSRevoked
+              issuedAt
+              expiresAt
+        pure (consentCid, revokedPermCid, auditCid)
+
+    choice RevokePermission : RevocationResult
+      with
+        revocationId : Text
+        reason : Text
+      controller owner
+      do
+        assertMsg "Permission must be active or pending" (status == PSActive || status == PSPending)
+        now <- getTime
+        auditCid <-
+          createAuditRecord
+            ("audit-revoke-" <> revocationId)
+            owner
+            PermissionRevoked
+            datasetId
+            (Some reason)
+            (Some revocationId)
+            [recipient]
+        revocationCid <-
+          create
+            Revocation with
+              revocationId
+              permissionId
+              agreementId
+              datasetId
+              revoker = owner
+              reason
+              revokedAt = now
+              affectedParty = recipient
+        _ <-
+          create
+            Permission with
+              permissionId
+              agreementId
+              datasetId
+              owner
+              recipient
+              purpose
+              accessRights
+              accessScope
+              status = PSRevoked
+              issuedAt
+              expiresAt
+        pure RevocationResult with revocationCid, auditCid
+
+    choice CheckExpiration : Optional (ContractId Permission, ContractId AuditRecord)
+      controller owner
+      do
+        now <- getTime
+        if now >= expiresAt && (status == PSActive || status == PSPending)
+          then do
+            auditCid <-
+              createAuditRecord
+                ("audit-expired-perm-" <> permissionId)
+                owner
+                AgreementExpired
+                datasetId
+                (Some "Permission expired")
+                (Some permissionId)
+                [recipient]
+            expiredCid <-
+              create
+                Permission with
+                  permissionId
+                  agreementId
+                  datasetId
+                  owner
+                  recipient
+                  purpose
+                  accessRights
+                  accessScope
+                  status = PSExpired
+                  issuedAt
+                  expiresAt
+            pure (Some (expiredCid, auditCid))
+          else pure None

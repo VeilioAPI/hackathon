@@ -1,0 +1,10 @@
+-- | Compatibility wrapper for legacy script name.
+module Veilio.DemoMultinode where
+
+import Daml.Script
+
+import qualified Veilio.LifecycleMultinode as Lifecycle
+
+-- | Legacy alias to lifecycle multinode entrypoint.
+demoMultinode : Script ()
+demoMultinode = Lifecycle.lifecycleMultinode

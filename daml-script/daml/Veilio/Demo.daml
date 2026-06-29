@@ -1,0 +1,10 @@
+-- | Compatibility wrapper for legacy script name.
+module Veilio.Demo where
+
+import Daml.Script
+
+import qualified Veilio.Lifecycle as Lifecycle
+
+-- | Legacy alias to lifecycle entrypoint.
+demo : Script ()
+demo = Lifecycle.lifecycle
