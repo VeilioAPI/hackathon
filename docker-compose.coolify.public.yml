@@ -1,0 +1,60 @@
+# Coolify overlay: connect to Five North Seaport Validator devnet (no embedded Canton).
+# In Coolify, set Compose file to BOTH:
+#   docker-compose.coolify.yml
+#   docker-compose.coolify.public.yml
+#
+# Required Coolify env (in addition to CORS / OBJECT_STORAGE_PUBLIC_BASE_URL):
+#   CANTON_OAUTH_CLIENT_SECRET=<from Five North>
+# Optional: copy party mappings from .env.public.example (already allocated on devnet).
+#
+# Recommended VPS: 2 GB+ RAM (no embedded Canton JVM).
+services:
+  canton:
+    profiles: ["disabled-local-canton"]
+
+  canton-bootstrap:
+    environment:
+      CANTON_MODE: public
+      CANTON_PUBLIC_BOOTSTRAP_ENABLED: "true"
+      CANTON_PUBLIC_UPLOAD_DAR: ${CANTON_PUBLIC_UPLOAD_DAR:-true}
+      CANTON_PUBLIC_WRITE_PARTICIPANTS_CONFIG: "true"
+      CANTON_PUBLIC_AUTO_ALLOCATE: ${CANTON_PUBLIC_AUTO_ALLOCATE:-true}
+      CANTON_PUBLIC_PARTY_NAMESPACE: ${CANTON_PUBLIC_PARTY_NAMESPACE:-1220a14ca128063b8dc9d1ebb0bd22633be9f2168500f4dbc1ecaeb1855b14e5acf8}
+      CANTON_PUBLIC_PARTY_MAPPINGS_JSON: ${CANTON_PUBLIC_PARTY_MAPPINGS_JSON:-{"BankA::1220a14ca128063b8dc9d1ebb0bd22633be9f2168500f4dbc1ecaeb1855b14e5acf8":"participant1","KYCProvider::1220a14ca128063b8dc9d1ebb0bd22633be9f2168500f4dbc1ecaeb1855b14e5acf8":"participant2","ExporterCo::1220a14ca128063b8dc9d1ebb0bd22633be9f2168500f4dbc1ecaeb1855b14e5acf8":"participant3","FinancePartner::1220a14ca128063b8dc9d1ebb0bd22633be9f2168500f4dbc1ecaeb1855b14e5acf8":"participant4","InsuranceCo::1220a14ca128063b8dc9d1ebb0bd22633be9f2168500f4dbc1ecaeb1855b14e5acf8":"participant5","AuditFirm::1220a14ca128063b8dc9d1ebb0bd22633be9f2168500f4dbc1ecaeb1855b14e5acf8":"participant2"}}
+      CANTON_PUBLIC_BANKS_JSON: ${CANTON_PUBLIC_BANKS_JSON:-[{"hint":"BankA","displayName":"Meridian Bank","participant":"participant1"},{"hint":"KYCProvider","displayName":"VeriTrust KYC","participant":"participant2"},{"hint":"ExporterCo","displayName":"Global Export Ltd","participant":"participant3"},{"hint":"FinancePartner","displayName":"TradeFlow Capital","participant":"participant4"},{"hint":"InsuranceCo","displayName":"Pacific Assurance","participant":"participant5"},{"hint":"AuditFirm","displayName":"Deloitte External Audit","participant":"participant2"}]}
+      CANTON_PUBLIC_SYNCHRONIZER_ID: ${CANTON_PUBLIC_SYNCHRONIZER_ID:-}
+      CANTON_PUBLIC_VET_ALL_PACKAGES: ${CANTON_PUBLIC_VET_ALL_PACKAGES:-true}
+      CANTON_PUBLIC_UPLOAD_PARTICIPANTS: ${CANTON_PUBLIC_UPLOAD_PARTICIPANTS:-participant1}
+      CANTON_DAR_PATH: ${CANTON_DAR_PATH:-/app/dars/veilio-governance-0.2.0.dar}
+      CANTON_PARTICIPANT1_JSON_URL: ${CANTON_PARTICIPANT1_JSON_URL:-https://ledger-api.validator.devnet.sandbox.fivenorth.io}
+      CANTON_PARTICIPANT2_JSON_URL: ${CANTON_PARTICIPANT2_JSON_URL:-}
+      CANTON_PARTICIPANT3_JSON_URL: ${CANTON_PARTICIPANT3_JSON_URL:-}
+      CANTON_PARTICIPANT4_JSON_URL: ${CANTON_PARTICIPANT4_JSON_URL:-}
+      CANTON_PARTICIPANT5_JSON_URL: ${CANTON_PARTICIPANT5_JSON_URL:-}
+      CANTON_USE_JWT: "false"
+      CANTON_OAUTH_TOKEN_URL: ${CANTON_OAUTH_TOKEN_URL:-https://auth.sandbox.fivenorth.io/application/o/token/}
+      CANTON_OAUTH_CLIENT_ID: ${CANTON_OAUTH_CLIENT_ID:-validator-devnet-m2m}
+      CANTON_OAUTH_CLIENT_SECRET: ${CANTON_OAUTH_CLIENT_SECRET}
+      CANTON_OAUTH_AUDIENCE: ${CANTON_OAUTH_AUDIENCE:-validator-devnet-m2m}
+      CANTON_OAUTH_SCOPE: ${CANTON_OAUTH_SCOPE:-daml_ledger_api}
+      CANTONSCAN_BASE_URL: ${CANTONSCAN_BASE_URL:-https://www.cantonscan.com}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    environment:
+      CANTON_MODE: public
+      CANTON_PARTICIPANT1_JSON_URL: ${CANTON_PARTICIPANT1_JSON_URL:-https://ledger-api.validator.devnet.sandbox.fivenorth.io}
+      CANTON_PARTICIPANT2_JSON_URL: ${CANTON_PARTICIPANT2_JSON_URL:-}
+      CANTON_PARTICIPANT3_JSON_URL: ${CANTON_PARTICIPANT3_JSON_URL:-}
+      CANTON_PARTICIPANT4_JSON_URL: ${CANTON_PARTICIPANT4_JSON_URL:-}
+      CANTON_PARTICIPANT5_JSON_URL: ${CANTON_PARTICIPANT5_JSON_URL:-}
+      CANTON_USE_JWT: "false"
+      CANTON_OAUTH_TOKEN_URL: ${CANTON_OAUTH_TOKEN_URL:-https://auth.sandbox.fivenorth.io/application/o/token/}
+      CANTON_OAUTH_CLIENT_ID: ${CANTON_OAUTH_CLIENT_ID:-validator-devnet-m2m}
+      CANTON_OAUTH_CLIENT_SECRET: ${CANTON_OAUTH_CLIENT_SECRET}
+      CANTON_OAUTH_AUDIENCE: ${CANTON_OAUTH_AUDIENCE:-validator-devnet-m2m}
+      CANTON_OAUTH_SCOPE: ${CANTON_OAUTH_SCOPE:-daml_ledger_api}
+      CANTONSCAN_BASE_URL: ${CANTONSCAN_BASE_URL:-https://www.cantonscan.com}
+      LOAD_DEMO_ON_START: ${LOAD_DEMO_ON_START:-false}
